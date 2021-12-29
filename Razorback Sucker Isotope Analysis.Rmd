@@ -1,0 +1,797 @@
+---
+title: "Razorback Sucker Elemental Isotope Analysis"
+author: "Alejandro Aragon"
+date: "12/21/2021"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+  word_document:
+    toc: yes
+  html_document:
+    code_folding: show
+    number_sections: yes
+    toc: yes
+---
+
+```{r, echo=FALSE}
+
+knitr::opts_chunk$set(comment = NA, message = FALSE, warning = FALSE, width = 100)
+knitr::opts_chunk$set(fig.align = "center", fig.height = 4, fig.width = 6)
+
+```
+
+# San Juan River Razorback Suckers
+
+__Razorback Suckers__ were collected in 2014 on the San Juan River.
+Elemental [isotopic ratios](https://en.wikipedia.org/wiki/Isotope_analysis)
+from razorback suckers were analyzed for Ba (Barium 56), Ca (Calcium 20), Mg (Magnesium 12), and Sr (Strontium 38).
+razorback suckers are non-lethally obtained and are used to detect natal origin since the
+material in the suckers are partially developed early in life.
+
+__The issue__ is that hatchery fish can get into the river and lose their tags.
+It is important for environmental resource managers to know whether untagged fish are wild or hatchery fish.
+There are five fish sources in the dataset.
+
+```
+5 Sources
+
+Hatchery
+  DEX = Dexter National Fish Hatchery
+  GJH = Ouray National Fish Hatchery, Grand Valley Unit
+
+Wild
+  NAP = NAPI ponds
+  SJR = San Juan River
+
+Unknown
+  UNK = untagged Razorback Suckers captured in the San Juan River
+        these could be from any of the above sources
+```
+
+__Goal__ is to test whether the known source populations have different multivariate means, and if so, if it is possible to build a model that predicts the origin of razorback suckers.
+  
+# Data
+
+## Summary
+
+```{r}
+sjrs.full <- read.csv("F:/Data Analysis/SanJuanRazorbackSuckers_data2014.csv")
+str(sjrs.full)
+
+summary(sjrs.full)
+```
+
+Adding `Source.Type` as a variable for a more general view of the sources. 
+
+```
+Source Type
+
+HCH = Hatchery
+    DEX = Dexter National Fish Hatchery
+    GJH = Ouray  National Fish Hatchery, Grand Valley Unit
+
+WLD = Wild 
+    NAP = NAPI ponds
+    SJR = San Juan River
+
+Unknown
+  UNK = untagged Razorback Suckers captured in the San Juan River
+        these could be from any of the above sources
+```
+
+```{r}
+sjrs.full <- na.omit(sjrs.full)
+sjrs.full$Source.Type <- rep(NA, nrow(sjrs.full))
+sjrs.full$Source.Type[ sjrs.full$Source %in% c("DEX", "GJH") ] <- "HCH"
+sjrs.full$Source.Type[ sjrs.full$Source %in% c("NAP", "SJR") ] <- "WLD"
+sjrs.full$Source.Type <- as.factor(sjrs.full$Source.Type)
+```
+
+## Preliminary Visualization
+
+`Station` has 67 levels making a pairing table challenging to read. 
+
+```{r, fig.height = 8, fig.width = 10}
+library(ggplot2)
+
+p <- ggplot(sjrs.full, aes(Station, fill = Source, color = Source.Type))
+p <- p + geom_bar(stat = "count")
+p <- p + theme(axis.text.x = element_text(angle = 90))
+p <- p + labs( title = "Station Count (Colored by Source)")
+print(p)
+
+```
+
+
+Subsetting dataset to remove `Sort.Key`, `Station`,  and `Type`. Suckers from an unknown source is also removed here as it provides no information to the goal (identifying source by isotopes).
+
+```{r}
+sjrs <- subset(sjrs.full, subset = (Source != "UNK"), select = c(Source, Ba137:Source.Type))
+
+str(sjrs)
+summary(sjrs)
+```
+
+Subsetting data has removed any missing information.
+
+```{r, fig.height = 8, fig.width = 8,  message = FALSE, warning = FALSE}
+# Scatterplot matrix
+library(ggplot2)
+library(GGally)
+
+p <- ggpairs(sjrs
+            , mapping = ggplot2::aes(colour = Source.Type, alpha = 0.5)
+            , upper = list(continuous = "density", combo = "box")
+            , lower = list(continuous = "points", combo = "dot")
+            #, lower = list(continuous = "cor")
+            )
+p <- p + theme(axis.text.x = element_text(angle = 90))
+p <- p + labs(title = "Known Fish Paired Plots (Colored by Source Type)"
+              , subtitle = "Upper: Density / Lower: Scatter")
+
+p1 <- ggpairs(sjrs
+            , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+            , upper = list(continuous = "density", combo = "box")
+            , lower = list(continuous = "points", combo = "dot")
+            #, lower = list(continuous = "cor")
+            )
+p1 <- p1 + theme(axis.text.x = element_text(angle = 90))
+p1 <- p1 + labs(title = "Known Fish Paired Plots(Colored by Source)"
+                , subtitle = "Upper: Density / Lower: Scatter")
+
+print(p)
+print(p1)
+```
+
+
+
+### Preliminary Scatter Plot Observations
+
+* High correlation between among isotopes of the same element.
+  + Dropping isotopes so one isotope of each element is represented in the model
+  + a principle component of each element to be considered
+* Barium isotopes would benefit from a transformation to normalize the distribution
+* Calcium isotope has two observations that are skewing the distribution. 
+* Strontium isotopes are indicative of razorback suckers from Dexter National Fish Hatchery
+* Source Type adds no obvious information for preliminary inspection
+  + Drop Source Type Variable
+
+## Clean and Transforming data
+
+__Transformations__
+
+```{r}
+sjrs$Ba137lg <- log10(sjrs$Ba137)
+sjrs$Ba138lg <- log10(sjrs$Ba138)
+```
+
+__Restriction__
+
+```{r}
+sjrs <- sjrs[!(sjrs$Ca43 < .55),]
+```
+
+### Partitioning Data For Training
+
+```{r}
+library(caret)
+
+sjrs$Source <- droplevels(sjrs$Source)
+
+set.seed(1122)
+trainIndex <- createDataPartition(sjrs$Source, p = .7, list = FALSE, times = 1)
+train.dat <- sjrs[ trainIndex,]
+test.dat <- sjrs[-trainIndex,]
+```
+
+__Train Data Visualization (After Transformations)__
+
+Unnecessary step, only done to confirm log transformation is appropriate for training data.
+
+```{r, fig.height = 8, fig.width = 8,  message = FALSE, warning = FALSE, echo=FALSE}
+library(ggplot2)
+library(GGally)
+p <- ggpairs(subset(train.dat, select = c(Source, Ba138lg, Ca43, Mg24, Sr87))
+            , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+            , upper = list(continuous = "density", combo = "box")
+            , lower = list(continuous = "points", combo = "dot")
+            #, lower = list(continuous = "cor")
+            )
+p <- p + theme(axis.text.x = element_text(angle = 90))
+p <- p + labs(title = "Known Fish Paired Plots (Colored by Source)"
+              , subtitle = "Upper: Density / Lower: Scatter")
+print(p)
+```
+
+## Data Summary
+
+Razorback suckers from the Dexter National Fish Hatchery can be easily identified by most combinations of the predictor variables. Ba138 in combination with any other predictor variable allows suckers from the Ouray National Fish Hatchery, Grand Valley Unit to be visually categorized. 
+
+# Multivariate Analysis of Variance (MANOVA)
+
+### Assumptions
+
+Shapiro-Wilk test for multivariate normality, as well as QQ-plots comparing the Mahalanobis D2 distance to a chi-squared distribution.
+
+__Test Hypothesis__
+
+Null hypothesis: The data is normally distributed. 
+
+Alternative hypothesis: Data is not normally distributed.
+
+If $p$-value < .05 reject $H_0$.
+
+
+```{r}
+library(mvnormtest)
+
+iso.vars <- c("Ca43", "Mg24", "Mg25", "Mg26", "Sr86"
+              , "Sr87", "Sr88", "Ba137lg", "Ba138lg" )
+
+# The data needs to be transposed t() so each variable is a row with observations as columns.
+sw.dex <- mshapiro.test(t(subset(train.dat, subset = (Source == "DEX"), select = iso.vars)))
+sw.gjh <- mshapiro.test(t(subset(train.dat, subset = (Source == "GJH"), select = iso.vars)))
+sw.nap <- mshapiro.test(t(subset(train.dat, subset = (Source == "NAP"), select = iso.vars)))
+sw.sjr <- mshapiro.test(t(subset(train.dat, subset = (Source == "SJR"), select = iso.vars)))
+sw.results <- list(sw.dex, sw.gjh, sw.nap, sw.sjr)
+```
+
+```{r, fig.height = 8, fig.width = 8}
+library(mvnormtest)
+
+# Graphical Assessment of Multivariate Normality
+f.mnv.norm.qqplot <- function(x, name = "") {
+  x <- as.matrix(x)     
+  center <- colMeans(x) 
+  n <- nrow(x);
+  p <- ncol(x);
+  cov <- cov(x);
+  d <- mahalanobis(x, center, cov) # distances
+  qqplot(qchisq(ppoints(n), df=p), d
+    , main=paste("QQ Plot MV Normality:", name)
+    , ylab="Mahalanobis D2 distance"
+    , xlab="Chi-squared quantiles")
+  abline(a = 0, b = 1, col = "red")
+}
+
+par(mfrow=c(2,2))
+f.mnv.norm.qqplot(subset(train.dat, subset = (Source == "DEX"), select = iso.vars), "DEX")
+f.mnv.norm.qqplot(subset(train.dat, subset = (Source == "GJH"), select = iso.vars), "GJH")
+f.mnv.norm.qqplot(subset(train.dat, subset = (Source == "NAP"), select = iso.vars), "NAP")
+f.mnv.norm.qqplot(subset(train.dat, subset = (Source == "SJR"), select = iso.vars), "SJR")
+```
+
+__Results__
+
+$p$-value for the Shapiro-Wilk test for Dexter National Fish Hatchery (DEX) is `r signif(sw.dex$p.value,6)`. $`r signif(as.numeric(unlist(sw.dex)["p.value"]),6)` < .05$, reject $H_0$ and conclude that the observations for DEX are not normally distributed.
+
+$p$-value for the Shapiro-Wilk test for Ouray  National Fish Hatchery, Grand Valley Unit (GJH) is `r signif(as.numeric(unlist(sw.gjh)["p.value"]),6)`. $`r signif(as.numeric(unlist(sw.gjh)["p.value"]),6)` < .05$, fail to reject $H_0$ and conclude that the observations for GJH are not normally distributed.
+
+$p$-value for the Shapiro-Wilk test for NAPI ponds (NAP) is `r signif(as.numeric(unlist(sw.nap)["p.value"]),6)`. $`r signif(as.numeric(unlist(sw.nap)["p.value"]),6)` < .05$ fail to reject $H_0$ and conclude that the observations for NAP are not normally distributed.
+
+$p$-value for the Shapiro-Wilk test for San Juan River (SJR) is `r signif(as.numeric(unlist(sw.sjr)["p.value"]),6)`. $`r signif(as.numeric(unlist(sw.sjr)["p.value"]),6)` < .05$ reject $H_0$ and conclude that the observations for SJR are not normally distributed.
+
+__Conclusion on Assumption of Normality__
+
+Since the assumption of normality is not met a non-parametric measure of MANOVA will need to be done.
+
+## MANOVA Model
+
+MANOVA will be measured by the Hotelling-Lawley trace test.
+
+### Comparison Across Sources
+
+__Test Hypothesis__
+
+$$
+H_0: \mu_{DEX} = \mu_{GJH} = \mu_{NAP} = \mu_{SJR}  
+\textrm{  versus  }
+H_\alpha: \mu_{DEX} \ne \mu_{GJH} \ne \mu_{NAP} \ne \mu_{SJR}
+$$
+
+Null hypothesis: The fish from the four sources are the same across isotopes.
+
+Alternative hypothesis: The fish from the four sources differ in isotopes.
+
+```{r}
+library(car)
+
+lm.man <- lm(cbind(Ca43, Mg24, Mg25, Mg26, Sr86, Sr87, Sr88, Ba137lg, Ba138lg) 
+             ~ Source, data = train.dat)
+man.train <- Manova(lm.man, test = "Hotelling-Lawley")
+man.train
+```
+
+__Results__
+
+The results from the Hotelling-Lawley test show that we have sufficient evidence to reject the null hypothesis and conclude that at least one of the sources differs from the other.
+
+
+### Multiple Comparisons (Between Sources)
+
+__Test Hypothesis__
+
+
+$$
+H_0: \mu_{i} = \mu_{j}  
+\textrm{  versus  }
+H_\alpha: \mu_{i} \ne \mu_{j} 
+$$
+
+Null hypothesis: mean of `source i` is equal to the mean of `source j`. 
+
+Alternative hypothesis: mean of `source i` is not equal to the mean of `source j`.
+
+This test is repeated for all sources so that the mean of each source has been tested against each of the others.
+
+```{r}
+library(car)
+# Multivariate MANOVA test
+
+Source.list <- sort(unique(train.dat$Source))
+
+for (i in 1:(length(Source.list) - 1)) {
+  for (j in (i + 1):length(Source.list)) {
+    # print a header to indicate which comparisons are being made
+    cat("\n\n")
+    cat(paste("***** Comparison between", i, Source.list[i], "and", j, Source.list[j]))
+
+    # perform pairwise comparison
+    
+    man.pair <- Manova(lm(cbind(Ba137, Ba138, Ca43, Mg24, Mg25, Mg26, Sr86, Sr87, Sr88)
+        ~ Source, data = subset(train.dat, (Source %in% Source.list[c(i, j)]))
+           ))
+    # print result
+    print(man.pair)
+  }
+}
+```
+
+__Results__
+
+At $\alpha = .05$ reject $H_0$ and conclude the means between the following pairs are not equal:
+  DEX and GJH
+  DEX and NAP
+  DEX and SJR
+  GJH and NAP
+  and
+  GJH and SJR
+
+Fail to reject the null and conclude that the means of NAP and SJR are equal.
+
+## Canonical Discriminant Functions (Further Visualizations)
+
+The canonical discriminant analysis will indicate the directions that provide the greatest ability to distinguish between the groups.
+  
+```{r}
+library(candisc)
+
+can.train <- candisc(lm.man)
+summary(can.train)
+```
+
+```{r, fig.height = 8, fig.width = 8,  message = FALSE, warning = FALSE, echo=FALSE}
+library(ggplot2)
+library(GGally)
+
+p <- ggpairs(can.train$scores
+            , mapping = ggplot2::aes(colour = Source, alpha = 0.5)
+            , upper = list(continuous = "density", combo = "box")
+            #, lower = list(continuous = "points", combo = "dot")
+            , lower = list(continuous = "cor")
+            , title = "Canonical discriminant variables by source"
+            )
+print(p)
+```
+
+
+__Results__
+
+The discriminant variables all except $Can3$ show some sort of difference between the sources because of their distributions but $Can1$ shows the clearest differences and similarities making it the most useful.
+
+## MANOVA Final Results
+
+Most of the sources can be differentiated by the mean of the isotopes. Razorback suckers that lose their tags can be traced to their source by analyzing the elemental isotopes in the fish.
+
+# Cluster Analysis
+
+
+__Goal__ is to find a clustering method that creates a dendrogram that seems to have a relatively small number of clusters that are different between clusters but similar within clusters.
+
+### Linkage Method Selection
+
+This section is unnecessary in understanding the research question. The cost to run this code is more expensive than its benefit and it's included here for future analysis and ease of examining the efficacy of other linkage methods.
+
+```{r, eval=FALSE}
+# eval=FALSE so this chunk doesn't evaluate 
+
+wd.clust <- NbClust(train.num, method = "ward.D", index = "all")
+wd.clust$Best.nc
+
+wd2.clust <- NbClust(train.num, method = "ward.D2", index = "all")
+wd2.clust$Best.nc
+
+sgl.clust <- NbClust(train.num, method = "single", index = "all")
+sgl.clust$Best.nc
+
+com.clust <- NbClust(train.num, method = "complete", index = "all")
+com.clust$Best.nc
+
+aveclust <- NbClust(train.num, method = "average", index = "all")
+aveclust$Best.nc
+
+mcq.clust <- NbClust(train.num, method = "mcquitty", index = "all")
+mcq.clust$Best.nc
+
+med.clust <- NbClust(train.num, method = "median", index = "all")
+med.clust$Best.nc
+
+cen.clust <- NbClust(train.num, method = "centroid", index = "all")
+cen.clust$Best.nc
+```
+
+## Average Linkage Method
+
+
+```{r message=FALSE, warning=FALSE}
+library(NbClust)
+
+# Removing factor variables
+train.sub <- subset(train.dat, select = iso.vars)
+train.num <- as.numeric(as.matrix(train.sub))
+
+aveclust <- NbClust(train.num, method = "average", index = "all")
+
+aveclust$Best.nc
+```
+
+
+## Plotting
+
+### Dendrogram
+
+```{r}
+# create distance matrix between points
+train.dist <- dist(train.sub)
+# create dendrogram
+hc.complete  <- hclust(train.dist, method = "average")
+
+# create a column with group membership
+train.dat$cut.comp <- factor(cutree(hc.complete, k = 3))
+```
+
+
+```{r, fig.height = 5, fig.width = 8}
+plot(hc.complete
+     , hang = -1
+     , main = "Average Linkage Method Using 3 Clusters"
+#     , labels = train.sub[,1]
+     )
+rect.hclust(hc.complete, k = 3)
+```
+
+The density of the dendrogram makes this plot hard to understand. Plotting against principal components gives a better visual understanding of the classifications.
+
+### PCA
+
+```{r, fig.height = 5, fig.width = 8}
+library(cluster)
+
+clusplot(train.dat, cutree(hc.complete, k = 3)
+        , color = TRUE, labels = 0, lines = 0
+        , cex = 2, cex.txt = 1, col.txt = "gray20"
+        , main = "Average Method using 3 clusters"
+        , sub = NULL
+        , col.p = train.dat$cut.comp)
+```
+
+## Cluster Analysis Results
+
+### Visualizing Efficacy
+
+__Efficacy By Source__
+
+```{r, fig.height = 8, fig.width = 10, echo=FALSE}
+library(ggplot2)
+
+# plot data by Source with clusters indicated
+
+p1 <- ggplot(train.dat, aes(x = Ba137lg, y = Sr86, colour = cut.comp))
+p1 <- p1 + geom_point(size = 2)
+p1 <- p1 + labs(title = "By source with clusters indicated")
+p1 <- p1 + facet_wrap( ~ Source, nrow = 1)
+
+
+# plot data by cluster with Source indicated
+p2 <- ggplot(train.dat, aes(x = Ba137lg, y = Sr86, colour = Source))
+p2 <- p2 + geom_point(size = 2)
+p2 <- p2 + labs(title = "By cluster with source indicated")
+p2 <- p2 + facet_wrap( ~ cut.comp, nrow = 1)
+
+library(gridExtra)
+grid.arrange(grobs = list(p1, p2), ncol=1
+             , top = paste("Clustering Using Average Linkage With Three Clusters"))
+```
+
+__Efficacy By Source Type__
+
+```{r, fig.height = 8, fig.width = 10, echo=FALSE}
+library(ggplot2)
+
+# plot data by Source with clusters indicated
+
+p1 <- ggplot(train.dat, aes(x = Ba137lg, y = Sr86, colour = cut.comp))
+p1 <- p1 + geom_point(size = 2)
+p1 <- p1 + labs(title = "By source type with clusters indicated")
+p1 <- p1 + facet_wrap( ~ Source.Type, nrow = 1)
+
+
+# plot data by cluster with Source indicated
+p2 <- ggplot(train.dat, aes(x = Ba137lg, y = Sr86, colour = Source.Type))
+p2 <- p2 + geom_point(size = 2)
+p2 <- p2 + labs(title = "By cluster with source type indicated")
+p2 <- p2 + facet_wrap( ~ cut.comp, nrow = 1)
+
+library(gridExtra)
+grid.arrange(grobs = list(p1, p2), ncol=1
+             , top = paste("Clustering Using Average Linkage With Three Clusters"))
+```
+
+
+The plots show there would be clear errors in classification of the origin of the razorback suckers particularly when trying to differentiate fish sourced from NAPI ponds and the San Juan River. This analysis is not unexpected given the results of the MANOVA analysis. 
+
+# Prediction
+
+## Principal Components Analysis (PCA)
+
+The model can be simplified without sacrificing information gain by taking a principal component of correlated isotopes.
+
+The correlation can be seen on previous pairs plots but will be shown again here.
+
+```{r, fig.height = 5, fig.width = 5}
+library(ggplot2)
+library(GGally)
+
+train.x <- subset(train.dat, select = iso.vars)
+
+p <- ggcorr(train.x, method = c("everything", "pearson"))
+p <- p + labs(title = "Correlation Plot")
+
+print(p)
+```
+
+__Barium Isotope Variables__:
+
+```{r}
+pca.Ba <- princomp( ~ Ba137lg + Ba138lg, data = train.dat, cor = FALSE)
+train.dat$PC1.Ba <- pca.Ba$scores[,"Comp.1"]
+
+summary(pca.Ba)
+print(loadings(pca.Ba), cutoff = 0)
+```
+
+```{r}
+# Adding the PC to the test dataset
+pca.Ba <- princomp( ~ Ba137lg + Ba138lg, data = test.dat, cor = FALSE)
+test.dat$PC1.Ba <- pca.Ba$scores[,"Comp.1"]
+```
+
+
+`Comp.1` explains `r signif(100*summary(pca.Ba)$sdev[1]^2/sum(summary(pca.Ba)$sdev^2), 5)`% of the variability of both the Barium isotopes.
+
+__Calcium Isotope Variables__:
+
+```{r}
+pca.Ca <- princomp( ~ Ca43, data = train.dat, cor = FALSE)
+train.dat$PC1.Ca <- pca.Ca$scores[,"Comp.1"]
+
+summary(pca.Ca)
+print(loadings(pca.Ca), cutoff = 0)
+```
+
+`Comp.1` explains `r signif(100*summary(pca.Ca)$sdev[1]^2/sum(summary(pca.Ca)$sdev^2), 5)`% of the variability of the Calcium isotope.
+
+__Magnesium Isotope Variables__:
+
+```{r}
+pca.Mg <- princomp( ~ Mg24 + Mg25 + Mg26, data = train.dat, cor = FALSE)
+summary(pca.Mg)
+print(loadings(pca.Mg), cutoff = 0)
+
+train.dat$PC1.Mg <- pca.Mg$scores[,"Comp.1"]
+```
+
+Note that `Comp.1` explains `r signif(100*summary(pca.Mg)$sdev[1]^2/sum(summary(pca.Mg)$sdev^2), 5)`% of the variability of all three of the Magnesium isotopes.
+
+__Strontium Isotope Variables__:
+
+```{r}
+pca.Sr <- princomp( ~ Sr86 + Sr87 + Sr88, data = train.dat, cor = FALSE)
+summary(pca.Sr)
+print(loadings(pca.Sr), cutoff = 0)
+
+train.dat$PC1.Sr <- -pca.Sr$scores[,"Comp.1"]
+```
+
+Note that `Comp.1` explains `r signif(100*summary(pca.Sr)$sdev[1]^2/sum(summary(pca.Sr)$sdev^2), 5)`% of the variability of all three of the Strontium isotopes.
+
+```{r, fig.height = 8, fig.width = 8,  message = FALSE, warning = FALSE, echo=FALSE}
+library(ggplot2)
+library(GGally)
+
+p <- ggpairs(
+             subset(train.dat, select = c(PC1.Sr, PC1.Mg, PC1.Ba, PC1.Ca, Source.Type) )
+            , mapping = ggplot2::aes(colour = Source.Type, alpha = 0.5)
+            , upper = list(continuous = "density", combo = "box")
+            , lower = list(continuous = "points", combo = "dot")
+            )
+print(p)
+
+
+```
+
+```{r}
+
+# Adding the PC to the test dataset
+pca.Ba <- princomp( ~ Ba137lg + Ba138lg, data = test.dat, cor = FALSE)
+test.dat$PC1.Ba <- pca.Ba$scores[,"Comp.1"]
+
+pca.Ca <- princomp( ~ Ca43, data = test.dat, cor = FALSE)
+test.dat$PC1.Ca <- pca.Ca$scores[,"Comp.1"]
+
+pca.Mg <- princomp( ~ Mg24 + Mg25 + Mg26, data = test.dat, cor = FALSE)
+test.dat$PC1.Mg <- pca.Mg$scores[,"Comp.1"]
+
+pca.Sr <- princomp( ~ Sr86 + Sr87 + Sr88, data = test.dat, cor = FALSE)
+test.dat$PC1.Sr <- -pca.Sr$scores[,"Comp.1"]
+```
+
+## Regression Modeling
+
+From visual inspection predicting hatchery and wild suckers will not be difficult so, both a binomial regression (fitted against `Source.Type`), and a multinomial regression (fitted on `Source`) will be done.
+
+### Binomial Model
+
+```{r}
+library(nnet)
+
+Bi.fit <- multinom(Source.Type ~ PC1.Ba + PC1.Ca + PC1.Mg + PC1.Sr, data = train.dat)
+summary(Bi.fit)
+```
+
+
+```{r}
+# Predicting the values for train dataset
+test.dat$BiPred <- predict(Bi.fit, newdata = test.dat, "class")
+
+# Building classification table
+tab <- table(test.dat$Source.Type, test.dat$BiPred)
+tab
+
+# Calculating accuracy - sum of diagonal elements divided by total obs
+round((sum(diag(tab))/sum(tab))*100,2)
+```
+
+#### Binomial Model Reduction
+
+```{r}
+Bi.fit.red.AIC <- step(Bi.fit, direction="both", trace = 0)
+
+Bi.fit.red.AIC$anova
+summary(Bi.fit.red.AIC)
+```
+
+```{r}
+# Predicting the values for train dataset
+test.dat$BiPred <- predict(Bi.fit.red.AIC, newdata = test.dat, "class")
+
+# Building classification table
+tab <- table(test.dat$Source.Type, test.dat$BiPred)
+tab
+
+# Calculating accuracy - sum of diagonal elements divided by total obs
+round((sum(diag(tab))/sum(tab))*100,2)
+```
+
+As expected the model accuracy in predicting `Source.Type` is 100%.
+
+### Multinomial Model
+
+```{r}
+library(nnet)
+
+mult.fit <- multinom(Source ~ PC1.Ba + PC1.Ca + PC1.Mg + PC1.Sr, data = train.dat)
+summary(mult.fit)
+```
+
+```{r}
+# Predicting the values for train dataset
+test.dat$MultPred <- predict(mult.fit, newdata = test.dat, "class")
+
+# Building classification table
+tab <- table(test.dat$Source, test.dat$MultPred)
+tab
+
+# Calculating accuracy - sum of diagonal elements divided by total obs
+round((sum(diag(tab))/sum(tab))*100,2)
+```
+
+#### Multinomial Model Reduction
+
+```{r}
+mult.fit.red.AIC <- step(mult.fit, direction="both", trace = 0)
+
+mult.fit.red.AIC$anova
+summary(mult.fit.red.AIC)
+```
+
+```{r}
+# Predicting the values for train dataset
+test.dat$MultPred <- predict(mult.fit.red.AIC, newdata = test.dat, "class")
+
+# Building classification table
+tab <- table(test.dat$Source, test.dat$MultPred)
+#tab
+
+# Calculating accuracy - sum of diagonal elements divided by total obs
+round((sum(diag(tab))/sum(tab))*100,2)
+```
+
+The final multinomial model contains `PC1.Ba` and `PC1.Sr` as predictor variables and has an accuracy rate of `r round((sum(diag(tab))/sum(tab))*100,2)`%. The error is in predicting suckers originating from NAPI ponds and the San Juan River which is expected based on previous analysis.
+
+## Model Efficacy
+
+```{r}
+library(caret)
+
+conf.mat <- confusionMatrix(test.dat$MultPred, test.dat$Source)
+conf.mat
+```
+
+
+# Conclusion
+
+Wild razorback suckers and those from hatcheries can be differentiated by their elemental isotopic ratios and their origin can be predicted to 100% accuracy. Determining the specific source of the suckers is more difficult, with a final model accuracy of 84.39%. Fish from the Dexter National Fish Hatchery and Ouray National Fish Hatchery, Grand Valley Unit are easily differentiated from each other and those from the NAPI ponds and San Juan River, however, differentiating between fish from NAPI ponds and the San Juan River is not possible. The elemental isotopic ratio that has the most weight in classification of origin are the Barium isotopes, which was shown to be significant in classifying both hatchery vs wild fish and fish by their source.
+
+Similarities in elemental isotopic ratios can be explained by proximity:
+
+```
+Ouray National Fish Hatchery: Northeaster Utah
+Dexter National Fish Hatchery: Southeastern New Mexico
+NAPI ponds: Northwestern New Mexico
+San Juan River: spans from Southern Utah to Northern New Mexico
+```
+NAPI ponds and the San Juan River at a point are within 4 miles of each other while they are approximately 300 miles away from the Ouray and Dexter National Fish Hatcheries, which are 900 miles away from each other. Similarities elemental isotopic ratios can be explained by proximity.
+
+Overall, tracking hatchery sourced razorback suckers is possible for biologists and conservationists to do and I assume it would be possible for other fish that are sourced from hatcheries that are not in close proximity of the natural populations they supplement.
+
+
+# Additional Reading
+
+* Navajo Agricultural Products Industry (NAPI) [2014 report](https://www.fws.gov/southwest/sjrip/pdf/DOC_NAPI_Razorback_Ponds_2014_Final.pdf)
+* Center for Biological Diversity [species notes](https://www.biologicaldiversity.org/species/fish/razorback_sucker/index.html)
+* The Southwestern Native Aquatic Resources & Recovery Center (formerly the Dexter National Fish Hatchery & Technology Center) [reference page](https://www.fws.gov/southwest/fisheries/dexter/)
+* The Colorado River Fishery Project [page](https://www.fws.gov/mountain-prairie/fisheries/coloradoRiver.php)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
