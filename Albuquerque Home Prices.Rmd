@@ -1,0 +1,408 @@
+---
+title: "Albuquerque Home Prices"
+author: "Alejandro Aragon"
+date: "11/22/2021"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Background:
+
+A dataset of listing prices for dwellings (homes and apartments) for sale from
+  [Zillow.com](http://www.zillow.com/homes/for_sale/Albuquerque-NM-87108/95303_rid/any_days/35.095087-106.52167835.035021-106.633258_rect/13_zm/0_mmm/)
+  on Feb 26, 2016 at 1 PM for Albuquerque NM 87108 was composed by Professor Erik Erhardt in the University of New Mexico Statistics Department.
+  
+# Objective:
+
+Develop a model to help understand which qualities that
+  contribute to a __typical dwellings' listing price__.
+Also, predict the listing prices of new listings.
+  
+```{r, echo=FALSE}
+datapath <- "F:/Data Analysis/ADA2_CL_14_HomePricesZillow_Abq87108.csv"
+```
+```{r}
+
+datFull <- read.csv(datapath, skip=2, stringsAsFactors = FALSE)[,-1]
+str(datFull)
+summary(datFull)
+
+```
+
+# Data Cleaning and Wrangling
+
+## Notes for Possible Corrections _Prior to Modeling_ (added over the course of this section):
+
+- `TypeSale` variable type needs to be changed from character to factor.
+- NA's exist in dataset. After the dataset of typical dwellings is made, omitting vs imputing missing data will be considered on the dataset size.
+    - A missing `Baths` value may disqualify an observation as a dwelling but a missing `YearBuilt` might be best addressed via imputation.
+- Few condos, for sale by owner, and foreclosures, are represented in the data.
+- Clear visual outliers in `PriceList`, `Size_sqft`, `LotSize`, `DaysListed`
+    - Dwellings (2 identified) with 6 to 5 baths may not be considered "typical"
+- `YearBuilt` might benefit visually from recentering.
+- Clear right skewing of multiple predictor variables possible transformations necessary.
+- An apartment building looks like it is being sold and is not a representative of a typical dwelling.
+- A house is listed to have the largest lot size in the dataset which is unusual considering there are apartments listed here as well.
+- An apartment has been on the market for over 5 years, this could be that the building hasn't been sold or inacurate record keeping.
+- As mentioned above 5 bathrooms is unusual, also the listing price for that observation is approximately $400,000 more than the median.
+- An odd number of apartments have more square footage than houses, a cap here could help normalize.
+- Transformations of predictor and response variables.
+- Recentering of `PriceList` (by 1000).
+
+## Restrict data to "typical" dwellings
+
+```{r}
+datFull$TypeSale <- factor(datFull$TypeSale)
+summary(datFull)
+```
+
+__Step 1:__
+
+Plotting the data to get a picture of and establish a "typical dwelling". 
+
+```{r, fig.height = 8, fig.width = 8,  message=FALSE, warning=FALSE, comment=FALSE }
+
+library(GGally)
+library(ggplot2)
+p <- ggpairs(datFull
+            , lower = list(continuous = "points")
+            , upper = list(continuous = "cor")
+            )
+print(p)
+```
+
+```{r}
+# Scaling year built has no impact on data and is purely for aesthetic reasons
+datFull$YearBuilt_1900 <- datFull$YearBuilt - 1900
+datFull$YearBuilt <- NULL
+```
+
+```{r}
+# Targetting specific outlying observations for further inspection.
+datFull[which(datFull$PriceList>1000000), ]
+datFull[which(datFull$LotSize>200000), ]
+datFull[which(datFull$DaysListed>750), ]
+datFull[which(datFull$Baths>4), ]
+```
+
+
+```{r}
+# Assigning a working dataset.
+datWork <- datFull
+```
+
+```{r}
+datWork <- datFull
+datWork <- datWork[-which(datWork$LotSize>12000), ]
+datWork <- datWork[-which(datWork$DaysListed>365), ]
+datWork <- datWork[-which(datWork$Baths>4), ]
+
+```
+
+```{r}
+datWork <- datWork[-which(datWork$TypeSale == "CONDO")  ,]
+datWork <- datWork[-which(datWork$TypeSale == "FOR SALE BY OWNER")  ,]
+datWork <- datWork[-which(datWork$TypeSale == "FORECLOSURE")  ,]
+datWork$TypeSale <- factor(datWork$TypeSale)
+```
+
+```{r}
+summary(datWork)
+```
+
+__Visually reassessing the data__
+
+```{r, fig.height = 8, fig.width = 8, warning=FALSE, comment=FALSE}
+
+library(GGally)
+library(ggplot2)
+p <- ggpairs(datWork
+            , mapping = ggplot2::aes(colour = TypeSale, alpha = 0.5)
+            , lower = list(continuous = "points")
+            , upper = list(continuous = "cor")
+            )
+print(p)
+```
+
+
+__Response Centering__
+
+```{r}
+# Price in units of $1000
+datWork$PriceListk <- datWork$PriceList / 1000
+```
+
+## Changes Made Because of Diagnostic Plots (Diagnostic Plot Analysis Section)
+
+__Influential Observations__
+
+Change will be made in susequent section for diagnostic plot demostration.
+
+__Response Transformation__
+
+```{r}
+datWork$PriceListlg <- log10(datWork$PriceList)
+```
+
+__Predictor Transformation__
+
+
+```{r}
+datWork$Size_sqftlg <- log10(datWork$Size_sqft)
+```
+
+```{r}
+datWork$LotSizelg <- log10(datWork$LotSize)
+```
+
+
+__YearBuilt Distribution__
+
+Note that this change will change the look of the original diagnostic plots.
+```{r}
+datWork <- datWork[-which(datWork$YearBuilt_1900>=100), ]
+```
+
+# Subset data for model building and prediction
+
+Creating a subset of the data for building the model,
+  and another subset for prediction later on.
+
+```{R}
+# remove observations with NAs
+datWork <- na.omit(datWork)
+
+# the data subset we will use to build our model
+dat.sub <- subset(datWork, DaysListed > 0)
+
+# the data subset we will predict from our model
+dat.pred <- subset(datWork, DaysListed == 0)
+```
+```{r}
+# the prices we hope to predict well from our model
+dat.pred$PriceListlg_true <- dat.pred$PriceListlg
+# set them to NA to predict them later
+dat.pred$PriceListlg <- NA
+```
+
+# Modeling
+
+## Initial (Full) Model
+
+A two-way interaction model will be fit to the full dataset without transformations
+
+```{R}
+
+lm.full <- lm(PriceListk ~ (TypeSale + Beds + Size_sqft + DaysListed + YearBuilt_1900 + LotSize)^2, data = dat.sub)
+#lm.full <- lm(PriceList ~ (Beds + Baths + Size.sqftlg + LotSizelg + DaysListed + YearBuilt_1900)^2, data = dat.abq.sv)
+library(car)
+try(Anova(lm.full, type=3))
+## Note that this doesn't work because APARTMENTs only have 1 bed and 1 bath.
+## There isn't a second level of bed or bath to estimate the interaction.
+## Therefore, remove those two terms
+lm.full <- update(lm.full, . ~ . - TypeSale:Beds - TypeSale:Baths)
+library(car)
+try(Anova(lm.full, type=3))
+```
+
+## Residual Analysis and Diagnostic Plots
+
+```{r}
+lm.diag.plots <- function(fit, rc.mfrow=NA, which.plot=c(1,4,6), sw.order.of.data = FALSE) {
+  ## lm.diag.plots() is a general function for plotting residual diagnostics for an lm() object
+  ## Arguments:
+  # fit          linear model object returned by lm()
+  # rc.mfrow     number of rows and columns for the graphic plot, e.g., c(2,3)
+  # which.plot   default plot numbers for lm()
+  # outliers     number to identify in plots from lm() and qqPlot()
+  # sw.order.of.data T/F for whether to show residuals by order of data
+
+  # variable names
+  var.names <- names(fit$model)[-1]
+  # display settings
+  if (is.na(rc.mfrow[1])) {
+    rc.mfrow <- c(ceiling((length(var.names) + 3 + length(which.plot) + sw.order.of.data) / 3), 3)
+  }
+  op <- par(no.readonly = TRUE) # the whole list of settable par
+  par(mfrow = rc.mfrow)
+
+  # default: Fitted, Cook's distance (with cutoff), and Leverage (with cutoffs)
+  for(i.plot in which.plot) {
+    plot(fit, which = i.plot)
+    if (i.plot == 4) {
+      Di.large <- 4 / (dim(fit$model)[1] - dim(fit$model)[2] - 1)
+      abline(h = Di.large, col = "blue", lty = 3)  # horizontal line
+    }
+    if (i.plot == 6) {
+      lev.large <- c(2, 3) * dim(fit$model)[2] / dim(fit$model)[1]
+      abline(v = lev.large[1], col = "blue", lty = 3)  # horizontal line
+      abline(v = lev.large[2], col = "blue", lty = 2)  # horizontal line
+    }
+  }
+
+  # Evaluate homoscedasticity
+  library(car)
+  # non-constant error variance test
+  print(ncvTest(fit))
+  # plot studentized residuals vs. fitted values
+  try(spreadLevelPlot(fit, sub = "(Homoscedasticity)"))
+
+  # Evaluate Collinearity
+  library(car)
+  vif.val <- vif(fit) # variance inflation factors
+  dotchart(vif.val, main = "Collinearity", xlab = "Variance Inflation Factor (VIF)", sub = "Not as useful with interactions")
+  abline(v = 2^2, col = "blue", lty = 2)  # vertical line
+
+  # Normal quantile plot (QQ-plot)
+  library(car)
+  qqPlot(fit$residuals, las = 1, main="QQ Plot", ylab = "Residuals")
+
+  # Box-Cox transformation suggestion
+  # only if all values are positive
+  if(min(fit$model[,1] > 0)){
+    library(car)
+    boxCox(lm.full, lambda = seq(-3,3,length=101), main = "Box-Cox power transformation")
+  }
+
+  # residuals vs order of data
+  if(sw.order.of.data) {
+    # order of data (not always interesting)
+    plot(fit$residuals, main="Residuals vs Order of data", ylab = "Residuals")
+    abline(h = 0, col = "gray75", lty = 3)  # horizontal line at zero
+  }
+
+  # residuals plotted vs each main effect
+  for(i.plot in 1:length(var.names)) {
+    m.lab <- paste("Residuals vs.", var.names[i.plot])
+    plot(fit$model[,var.names[i.plot]], fit$residuals, main=m.lab, ylab = "Residuals", xlab = var.names[i.plot])
+    abline(h = 0, col = "gray75", lty = 3)  # horizontal line at zero
+  }
+
+  par(op) # reset plotting options
+
+  ## Useful list of diags: http://www.statmethods.net/stats/rdiagnostics.html
+} # end of reg.diag.plots()
+```
+
+```{R, fig.height = 8, fig.width = 10, warning=FALSE, comment=FALSE}
+lm.diag.plots(lm.full, rc.mfrow = c(2,3))
+```
+
+### Diagnostic Plot Analyses
+
+- Residual vs Fitted is not ideally random and spreadout
+- Observation 32 has a high Cook's Distance and Leverage
+- Observation 19 has a moderately high leverage
+- The QQ plot shows there is not a perfect normal distribution but there is not an obvious "S" shape
+- Box-Cox plot with 0 in the interval shows a transformation of the response is necessary 
+- `YearBuilt_1900` has a definite cone shape.
+
+These problems will be addressed in the __Data Cleaning and Wrangling__ section.
+
+
+## Second Model (After Changes)
+
+Linear model after transformations noted above
+
+```{R}
+## Remove influential observations
+## Observations 45 and 137 added after second model
+dat.sub <- dat.sub[-which(row.names(dat.sub) %in% c(32, 19, 45, 137)),]
+```
+
+```{R}
+lm.trans.dat <- lm(PriceListlg ~ (TypeSale + Beds + Size_sqftlg + DaysListed + YearBuilt_1900 + LotSizelg)^2, data = dat.sub)
+#lm.full <- lm(PriceList ~ (Beds + Baths + Size.sqftlg + LotSizelg + DaysListed + YearBuilt_1900)^2, data = dat.abq.sv)
+library(car)
+try(Anova(lm.trans.dat, type=3))
+
+lm.trans.dat <- update(lm.trans.dat, . ~ . - TypeSale:Beds - TypeSale:Baths)
+library(car)
+try(Anova(lm.trans.dat, type=3))
+```
+
+```{r, fig.height = 8, fig.width = 10, warning=FALSE, comment=FALSE}
+lm.diag.plots(lm.trans.dat, rc.mfrow = c(2,3))
+```
+
+
+Scatterplot of the model-building subset.
+
+```{R, fig.height = 8, fig.width = 8, warning=FALSE, comment=FALSE}
+library(GGally)
+library(ggplot2)
+p <- ggpairs(dat.sub
+            , mapping = ggplot2::aes(colour = TypeSale, alpha = 0.5)
+            , lower = list(continuous = "points")
+            , upper = list(continuous = "cor")
+            )
+print(p)
+```
+
+
+
+## Model Selection (Check Model Assumptions)
+
+Using `step(..., direction="both")` with the BIC criterion, perform model selection.
+
+```{R, fig.height = 8, fig.width = 10, warning=FALSE, comment=FALSE}
+lm.red.BIC <- step(lm.trans.dat, direction="both", test="F", trace = 0
+                         , k=log(nrow(dat.sub)))
+lm.final <- lm.red.BIC
+
+lm.diag.plots(lm.final, rc.mfrow = c(2,3))
+```
+
+Model assumptions appear to be reasonably met.
+
+__Final Model__
+
+```{r}
+summary(lm.final)
+```
+
+### Interpretation of Model Coeffcients
+
+The intercept means that the "starting price" to purchase a dwelling is 812.83 (10^2.91). 
+If the this is a house being sold this listing price increases to $3162.28 (10^(2.91 + .59)). 
+For every unit increase in square footage the listing price increases by $5.37. 
+Oddly for every unit increase in year built the price _decreases_ by $1.01 (10 ^ .003584)
+
+## Plot Final Model
+
+```{R, fig.height = 5, fig.width = 8, echo=FALSE, warning=FALSE, comment=FALSE}
+library(ggplot2)
+p <- ggplot(dat.sub, aes(x = Size_sqftlg, y = PriceListlg, colour = TypeSale, shape = TypeSale))
+p <- p + geom_point(size = 2, alpha=0.5)
+#p <- p + expand_limits(x = 0, y = 8.5)
+p <- p + geom_smooth(method = lm, se = FALSE) # , alpha=0.15, fullrange = TRUE)
+p <- p + labs(title="Log Listing Price", x = "log10(Size.sqft)")
+print(p)
+```
+
+
+# Prediction
+
+```{R}
+# predict new observations, convert to data frame
+lm.pred <- as.data.frame(predict(lm.final, newdata = dat.pred, interval = "prediction"))
+# add column of actual list prices
+lm.pred$PriceListlg <- dat.pred$PriceListlg_true
+
+
+10^lm.pred
+
+# attributes of the three predicted observations
+dat.pred
+```
+
+With the three observations held out to predict against only one fell within the prediction interval.
+
+# Conclusion
+
+This model isn't expected to predict the price of a dwelling very well, because the final model Adjusted $R^2$ accounts for only 53% of the variability in the data. The poor predictive power of the model is also shown by the prediction interval being so wide. Problems with this model stems from the lack of observations and not enough observations in other `SaleType` factor levels which could've given more insight in the relation of the listing price. Since this is "real world" data the lack of predictive power and low $R^2$ is not surprising as data could always be better when not controlled in a lab setting. What could possibly be looked into is the ability to categorize housing and apartments, the very slight grouping between the two can be seen in the Log Listing Price plot, but this would not be a very helpful model unless for some reason the dwelling type is not listed in the dataset.
+
+
