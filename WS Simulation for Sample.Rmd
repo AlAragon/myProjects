@@ -1,0 +1,113 @@
+---
+title: "World Series Simulation for Feedback"
+output: 
+html_document
+---
+
+
+
+getmode() function taken from [tutorial point](https://www.tutorialspoint.com/r/r_mean_median_mode.htm)
+
+```{r}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+Data pulled from [Baseball-Reference.com](https://www.baseball-reference.com)
+
+```{r}
+team <- c("ATL", "BOS", "CHC", "CHC", "HOU", "KCR", "LAD", "LAD", "LAD", "SFG", "SFG", "CHW")
+Year <- c(2021, 2004, 1903, 2014, 2021, 2015, 1966, 2020, 2021, 2014, 2021, 1994)
+WR <- c(0.5465839, 0.6049383, 0.5942029, 0.4506173, 0.5308642, 0.4567901, 0.5864198, 0.7166667
+        , 0.654321, 0.5432099, 0.6604938, 0.5929204)
+
+mlb.dat <- data.frame(team, Year, WR)
+```
+
+The probability of success will be determined by the win/loss rate the team had during the regular season for that particular year.
+
+How this method works:
+
+* Two teams and associated years are passed through the function and put into a vector "teamsPlaying".
+  + "nsim" was added to change how many times samples will be taken to make the results easier to read here. It was previously fixed at 100001.
+* Using the teams associated years as indexes the win rate is pulled from the data frame and put in a probability vector "p" that is used to weight the sampling probability.
+* `nsim` samples of the two teams are taken and put into a data frame called seriesResults.
+  + This is repeated 7 times to mimic a series of 7 games.
+* Using the [getmode() function](https://www.tutorialspoint.com/r/r_mean_median_mode.htm), the team that appears the most in the each of the column vectors is declared the winner of that "game" and assigned to the seriesResults vector.
+* The team that returned the most frequently in the seriesResults vector is declared the winner of the simulated World Series ("WSwinner")
+
+
+```{r}
+
+
+WS.simulation <- function(team1, year1, team2, year2, nsim){
+  set.seed(Sys.time())
+  mlb <- mlb.dat
+   
+   seriesResults <- vector()
+   teamsPlaying <- c(paste(year1, team1, sep = "_"), paste(year2, team2, sep = "_"))
+   
+ # Pulling win rate from dataset
+   team1WR <- mlb$WR[which(mlb$team == team1 & mlb$Year == year1)] 
+   team2WR <- mlb$WR[which(mlb$team == team2 & mlb$Year == year2)]
+   
+   # List to hold the sampling results for each "game"
+   gameNames <- c("Game1", "Game2", "Game3", "Game4", "Game5", "Game6", "Game7") 
+   games <- list()
+ 
+   # creating a vector of win rate as a psuedo probability
+   p <- c(team1WR, team2WR)
+   
+   samplingResults<- replicate(7, sample(teamsPlaying, nsim, replace = TRUE, prob = p))
+   
+   for (i in 1:7) {
+     
+     # Putting most sampled team into results vector 
+     seriesResults[i] <- getmode(samplingResults[,i])
+     
+     # Putting sampling results into previously made lists
+     games[[i]] <- data.frame(Year = c(year1, year2)
+                              , teams = c(team1, team2)
+                              , nSampled = tabulate(match(samplingResults[,i], teamsPlaying))
+                              , perSampled = c(tabulate(match(samplingResults[,i], teamsPlaying))[1]/nsim
+                                               , tabulate(match(samplingResults[,i], teamsPlaying))[2]/nsim)
+                              , winRate = p)
+   }
+   
+   names(games) <- gameNames
+    
+    sim <- list(WSwinner = getmode(seriesResults)
+                , gameResults = seriesResults
+                , winRate = p
+                , gameStats = games
+                , samples = samplingResults
+      )
+    
+    class(sim) <- "WS.sim"
+    return(sim)
+}
+```
+
+```{r}
+hou21.atl21 <- WS.simulation("HOU", 2021, "ATL", 2021, 5)
+hou21.atl21
+```
+
+
+```{r}
+
+lad66.lad2020 <- WS.simulation("LAD", 1966, "LAD", 2020, 100001)
+lad66.lad2020$WSwinner
+lad66.lad2020$gameStats$Game1
+
+```
+
+```{r}
+WS.simulation("SFG", 2014, "KCR", 2015, 7)
+```
+
+```{r}
+WS.simulation("CHC", 1903, "CHC", 2014, 11)
+```
